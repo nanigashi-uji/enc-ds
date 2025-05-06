@@ -1,0 +1,70 @@
+---
+title: "enc_ds encryption"
+---
+flowchart TD
+   raw_data[/"**Raw Data**"/]
+
+   master_key_phrase[/"**Master Key Phrase**"/]
+   master_key_signed{{Master Key Signature}}
+   ssh_private_key_enc[/"SSH Private Key (Encripted)"/]
+   ssh_private_key_raw{{SSH Private Key}}
+   ssh_public_key[\SSH Public Key\]
+   ssh_passphrase[/"**SSH Key pass phrase**"/]
+
+   ssh_key_gen(SSH Key Generation)
+   sha_hash_0(SHA2 Hash)
+   sha_hash_1(SHA2 Hash)
+
+   gen_salt("EncDSUtil.GenSalt()")
+   gen_iv("EncDSUtil.GenIV()")
+
+   ssh_agent[SSH agent]
+   key_sign[Signature]
+   ssh_kdf["PBKDF2-HMAC"]
+   enc_aes["AES-GCM"]
+
+   enc_salt[\Salt\]
+   enc_iv[\IV\]
+   enc_data[\Encrypted Data\]
+   
+   enc_dataset@{ shape: docs, label: "{Encrypted_data, Salt, IV}" }
+
+   merger@{ shape: f-circ, label: " " }
+
+   ssh_passphrase -.-> ssh_key_gen
+
+   subgraph "ssh-keygen"
+   ssh_key_gen    --> ssh_private_key_enc
+   ssh_key_gen    --> ssh_public_key
+   end
+
+   ssh_private_key_enc --> ssh_agent
+   ssh_passphrase -.-> ssh_agent
+   ssh_agent --> ssh_private_key_raw
+
+   master_key_phrase   --> sha_hash_0
+
+   raw_data --> enc_aes
+
+   subgraph "encryption"
+   ssh_private_key_raw --> key_sign
+   sha_hash_0 --> key_sign
+   key_sign --> master_key_signed
+   master_key_signed --> sha_hash_1
+
+   sha_hash_1 --> ssh_kdf
+   gen_salt --> enc_salt
+   enc_salt --> ssh_kdf
+   ssh_kdf --> enc_aes
+   gen_iv --> enc_iv
+   enc_iv --> enc_aes
+   enc_aes --> enc_data
+
+   enc_data --> merger
+   enc_salt --> merger
+   enc_iv --> merger
+
+   end
+
+
+   merger --> enc_dataset

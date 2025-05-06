@@ -1,0 +1,59 @@
+---
+title: "enc_ds decryption"
+---
+flowchart TD
+
+   enc_dataset[/"**{Encrypted_data, Salt, IV}**"/]
+
+   master_key_phrase[/"**Master Key Phrase**"/]
+   ssh_passphrase[/"**SSH Key pass phrase**"/]
+
+   master_key_signed{{Master Key Signature}}
+   ssh_private_key_raw{{SSH Private Key}}
+
+   sha_hash_0(SHA2 Hash)
+   sha_hash_1(SHA2 Hash)
+
+   ssh_agent[SSH agent]
+   key_sign[Signature]
+   ssh_kdf["PBKDF2-HMAC"]
+   dec_aes["AES-GCM"]
+
+   dec_salt{{Salt}}
+   dec_iv{{IV}}
+   enc_data{{Encrypted Data}}
+
+   divider@{ shape: f-circ, label: " " }
+   
+   raw_data@{ shape: docs, label: "**Decrypted_data**" }
+
+
+
+   ssh_passphrase -.-> ssh_agent
+
+   ssh_agent --> ssh_private_key_raw
+
+   master_key_phrase   --> sha_hash_0
+
+   enc_dataset --> divider
+
+   subgraph "decryption"
+
+   divider --> enc_data
+   divider --> dec_iv
+   divider --> dec_salt
+
+   ssh_private_key_raw --> key_sign
+   sha_hash_0 --> key_sign
+   key_sign --> master_key_signed
+   master_key_signed --> sha_hash_1
+
+   sha_hash_1 --> ssh_kdf
+   dec_salt --> ssh_kdf
+   ssh_kdf --> dec_aes
+   dec_iv --> dec_aes
+   enc_data --> dec_aes
+   end
+
+   dec_aes --> raw_data
+

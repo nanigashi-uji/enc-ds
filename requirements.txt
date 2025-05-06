@@ -1,0 +1,8 @@
+cryptography
+paramiko
+PyNaCl
+PyYAML
+toml
+pkgstruct
+sshkeyring
+argparse_extd

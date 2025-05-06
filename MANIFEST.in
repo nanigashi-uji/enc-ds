@@ -1,0 +1,10 @@
+include LICENSE
+include *.md
+exclude README.md
+exclude Makefile
+exclude .git
+include requirements.txt
+include src/enc_ds/share/data/*
+include test/*
+
+

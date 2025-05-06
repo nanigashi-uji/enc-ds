@@ -1,0 +1,27 @@
+[project]
+name = "enc-ds"
+version = "0.0.1"
+description = "Utility for simple encrypted data storage using RSA signatures via ssh-agent"
+dependencies = [ "cryptography", "paramiko", "PyNaCl", "PyYAML", "toml", "pkgstruct", "sshkeyring", "argparse_extd" ]
+readme = "README.rst"
+requires-python = ">=3.8"
+authors = [{ name = "Nanigashi Uji", email="53845049+nanigashi-uji@users.noreply.github.com" },
+           { name = "Nanigashi Uji", email="4423013-nanigashi_uji@users.noreply.gitlab.com" }]
+
+license = { file = "LICENSE" }
+keywords = ['ssh-agent', 'encryption']
+
+[project.urls]
+Homepage = "https://github.com/nanigashi-uji/enc-ds"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+enciphered_datastorage = "enc_ds.enciphered_datastorage:main"
+
+[tool.setuptools.package-data]
+"yourlib" = ["share/data/*"]
