@@ -1,6 +1,6 @@
 [project]
 name = "enc-ds"
-version = "0.0.1"
+version = "0.0.2"
 description = "Utility for simple encrypted data storage using RSA signatures via ssh-agent"
 dependencies = [ "cryptography", "paramiko", "PyNaCl", "PyYAML", "toml", "pkgstruct", "sshkeyring", "argparse_extd" ]
 readme = "README.rst"
