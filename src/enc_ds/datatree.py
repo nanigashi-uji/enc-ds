@@ -684,8 +684,7 @@ class DataTree(DataTreeBase):
         return flg
 
     def __getitem__(self, key):
-        v, flg = self._base.accessor_w_chk(data=self.root_node,
-                                           idxs=key, leaf_node=False)
+        v, flg = self._base.accessor_w_chk(data=self.root_node, idxs=key)
         return v
 
     def __setitem__(self, key, value):
