@@ -34,7 +34,7 @@ from typing import Union
 
 from .datatree import DataTreeBase, DataTree
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 
 class EncDSUtil(object):
     """
@@ -114,7 +114,8 @@ class EncDSUtil(object):
     @classmethod
     def SignBySSHkey(cls, ssh_private_key, data, algorithm:str="rsa-sha2-512", **kwds) -> bytes:
         if isinstance(ssh_private_key, paramiko.agent.PKey):
-            return ssh_private_key.sign_ssh_data(paramiko.util.asbytes(data), algorithm)
+            msg = ssh_private_key.sign_ssh_data(paramiko.util.asbytes(data), algorithm)
+            return ( msg.get_string() if isinstance(msg, paramiko.message.Message) else msg )
         else:
             sys.stderr.write("[%s.%s:%d] Error : Neither agent_key nor local_key are available. (%s)\n"
                              % (cls.__name__, inspect.currentframe().f_code.co_name, inspect.currentframe().f_lineno, str(ssh_private_key)))
@@ -152,7 +153,7 @@ class EncDSUtil(object):
             self.salt       = eval(self.__scope__).CheckBytesLength(salt, key_bits=self.key_bits, verbose=self.verbose, encoding=kwds.get('encoding', 'utf-8'))
 
         def sign_by_sshkey(self, data, verbose:bool=False, encoding='utf-8'):
-            sign = eval(self.__scope__).SignBySSHkey(self.sshkey, data,
+            sign = eval(self.__scope__).SignBySSHkey(ssh_private_key=self.sshkey, data=data,
                                                      algorithm=self.sshkeysign_algorithm, verbose=self.verbose)
             return eval(self.__scope__).RehashBytesIfNeeded(sign, key_bits=self.key_bits,
                                                             hasher=self.hasher, verbose=self.verbose, encoding=encoding)

@@ -38,7 +38,7 @@ tests:
 	env PYTHONPATH=tests_temp: $(PYTHON) -m pytest
 
 clean_tests_out:
-	rm -rf tests_temp .pytest_cache .benchmarks 
+	rm -rf tests_temp .pytest_cache .benchmarks tests/__pycache__
 
 graphs: src/enc_ds/share/data/cipher_diagram_0.png src/enc_ds/share/data/cipher_diagram_1.png
 
