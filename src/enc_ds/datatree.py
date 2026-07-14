@@ -807,8 +807,8 @@ class DataTree(DataTreeBase):
 
     def is_validkey(self, keyset=None, 
                     leaf_node=False, negate=True):
-        if keyset_list is None:
-            keyset_list = []
+        if keyset is None:
+            keyset = []
         return self._base.find_key(obj=self.root_node, keyset=keyset, 
                                    leaf_node=leaf_node, negate=negate)
 
