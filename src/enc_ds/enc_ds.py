@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
 import os
 import sys
 import string
@@ -11,19 +13,36 @@ import struct
 import getpass
 import io
 import base64
+import uuid
+import collections
+import types
 
 import cryptography
+import cryptography.hazmat.backends
+import cryptography.hazmat.primitives
+import cryptography.hazmat.primitives.hashes
+import cryptography.hazmat.primitives.ciphers
+import cryptography.hazmat.primitives.ciphers.algorithms
+import cryptography.hazmat.primitives.ciphers.modes
 import cryptography.hazmat.primitives.kdf.pbkdf2
+
 import paramiko
 
 import sshkeyring
 
+from typing import Union
+
 from .datatree import DataTreeBase, DataTree
+
+__version__ = '0.0.4'
 
 class EncDSUtil(object):
     """
     Base Utility Class
     """
+
+    VERSION = __version__
+    
     def __init__(self):
         pass
 
@@ -43,8 +62,8 @@ class EncDSUtil(object):
         return secrets.token_bytes((key_bits+7)//8)
     
     @classmethod
-    def CheckBytesLength(cls, data, key_bits:int=512, verbose:bool=False) -> bytes:
-        u_data = data.encode(coding='utf-8') if isinstance(data,str) else data
+    def CheckBytesLength(cls, data, key_bits:int=512, verbose:bool=False, encoding='utf-8') -> bytes:
+        u_data = data.encode(encoding=encoding) if isinstance(data,str) else data
         if u_data is None:
             if verbose:
                 sys.stderr.write("[%s.%s:%d] New %d-bytes data is created recreated\n"
@@ -57,23 +76,23 @@ class EncDSUtil(object):
         elif len(u_data)<(key_bits//8):
             raise ValueError("[%s.%s:%d] Warning: salt is too short. (len=%d<%d)\n"
                              % (cls.__name__, inspect.currentframe().f_code.co_name,
-                                inspect.currentframe().f_lineno, len(u_data)<(key_bits//8)))
+                                inspect.currentframe().f_lineno, len(u_data), (key_bits//8)))
         return u_data
 
     @classmethod
     def ChooseHasher(cls, key_bits:int=512):
-        hasher = cryptography.hazmat.primitives.hashes.Hash( cryptography.hazmat.primitives.hashes.SHA512() if key_bits>384 else 
-                                                             ( cryptography.hazmat.primitives.hashes.SHA384() if key_bits>256 else 
-                                                               ( cryptography.hazmat.primitives.hashes.SHA512_256() if key_bits>224 else 
-                                                                 ( cryptography.hazmat.primitives.hashes.SHA512_224() ))))
+        return ( cryptography.hazmat.primitives.hashes.SHA512() if key_bits>384 else 
+                 ( cryptography.hazmat.primitives.hashes.SHA384() if key_bits>256 else 
+                   ( cryptography.hazmat.primitives.hashes.SHA512_256() if key_bits>224 else 
+                     ( cryptography.hazmat.primitives.hashes.SHA512_224() ))))
         return hasher
-        
+    
 
     @classmethod
-    def RehashBytesIfNeeded(cls, data:bytes|str=None, key_bits:int=512, 
+    def RehashBytesIfNeeded(cls, data=None, key_bits:int=512, 
                             hasher : cryptography.hazmat.primitives.hashes.HashAlgorithm=None,
-                            verbose:bool=False) -> bytes:
-        u_data = data.encode(coding='utf-8') if isinstance(data, str) else data
+                            verbose:bool=False, encoding='utf-8') -> bytes:
+        u_data = data.encode(encoding=encoding) if isinstance(data, str) else data
         if not isinstance(u_data, bytes):
             raise TypeError("[%s.%s:%d] Data type is not str/bytes/NoneType (but, %s)" 
                             % (cls.__name__, inspect.currentframe().f_code.co_name,
@@ -86,8 +105,10 @@ class EncDSUtil(object):
                              % (cls.__name__, inspect.currentframe().f_code.co_name,
                                 inspect.currentframe().f_lineno, len(u_data), key_bits//8))
 
-        hasher = hasher if isinstance(hasher,cryptography.hazmat.primitives.hashes.HashAlgorithm) else cls.ChooseHasher(key_bits=key_bits)
-        hasher.update(data)
+        hasher = ( cryptography.hazmat.primitives.hashes.Hash(hasher)
+                   if isinstance(hasher,cryptography.hazmat.primitives.hashes.HashAlgorithm)
+                   else cryptography.hazmat.primitives.hashes.Hash(cls.ChooseHasher(key_bits=key_bits)))
+        hasher.update(u_data)
         return hasher.finalize()
 
     @classmethod
@@ -96,17 +117,25 @@ class EncDSUtil(object):
             return ssh_private_key.sign_ssh_data(paramiko.util.asbytes(data), algorithm)
         else:
             sys.stderr.write("[%s.%s:%d] Error : Neither agent_key nor local_key are available. (%s)\n"
-                             % (self.__class__.__name__, inspect.currentframe().f_code.co_name, inspect.currentframe().f_lineno, str(self)))
+                             % (cls.__name__, inspect.currentframe().f_code.co_name, inspect.currentframe().f_lineno, str(ssh_private_key)))
             raise TypeError("Unknown ssh key object type")
 
 
+    @classmethod
+    def build_masterkey(cls, master_key, prefix=None, suffix=None, encoding='utf-8') -> str:
+        _mkey_base = master_key.decode(encoding=encoding) if isinstance(master_key, bytes) else master_key
+        _pfix = prefix.decode(encoding=encoding) if isinstance(prefix, bytes) else prefix
+        _sfix = suffix.decode(encoding=encoding) if isinstance(suffix, bytes) else suffix
+        _mkey  = (_pfix + _mkey_base ) if isinstance(_pfix, str) else _mkey_base
+        return (_mkey+_sfix) if isinstance(_sfix, str) else _mkey
+    
     class SSHSignKDF(object):
         """
         Key Derivation Function utility w/ sigining by SSH key
-    
+        
         """
         def __init__(self, sshkey : paramiko.pkey.PKey,
-                     salt:bytes|str = None, 
+                     salt = None, 
                      key_bits:int=512, iterations=1000000,
                      sshkeysign_algorithm:str="rsa-sha2-512",
                      hasher:cryptography.hazmat.primitives.hashes.HashAlgorithm=None, **kwds):
@@ -118,26 +147,27 @@ class EncDSUtil(object):
             self.sshkeysign_algorithm = sshkeysign_algorithm
             self.iterations = iterations
             self.hasher     = (hasher if isinstance(hasher,cryptography.hazmat.primitives.hashes.HashAlgorithm)
-                               else eval(self.__scope__).ChooseHasher(key_bits=key_bits))
+                               else None ) # cryptography.hazmat.primitives.hashes.Hash(cls.ChooseHasher(key_bits=key_bits)))
             self.verbose    = kwds.get('verbose', False)
-            self.salt       = eval(self.__scope__).CheckBytesLength(salt, key_bits=self.key_bits, verbose=self.verbose)
+            self.salt       = eval(self.__scope__).CheckBytesLength(salt, key_bits=self.key_bits, verbose=self.verbose, encoding=kwds.get('encoding', 'utf-8'))
 
-            self.kdf        = cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC(algorithm=cryptography.hazmat.primitives.hashes.SHA512(),
-                                                                                   length=self.key_bits//8, salt=self.salt, iterations=self.iterations)
-            
-        def sign_by_sshkey(self, data:bytes|str, verbose:bool=False):
+        def sign_by_sshkey(self, data, verbose:bool=False, encoding='utf-8'):
             sign = eval(self.__scope__).SignBySSHkey(self.sshkey, data,
                                                      algorithm=self.sshkeysign_algorithm, verbose=self.verbose)
             return eval(self.__scope__).RehashBytesIfNeeded(sign, key_bits=self.key_bits,
-                                                            hasher=self.hasher, verbose=self.verbose)
-                
-        def derive(self, key_material:bytes|str, verbose:bool=False) -> bytes:
-            u_sign = self.sign_by_sshkey(data=key_material, verbose=verbose)
-            return self.kdf.derive(u_sign)
-    
-        def verify(self, key_material:bytes|str, expected_key=bytes|str, verbose:bool=False):
-            u_sign = self.sign_by_sshkey(data=key_material, verbose=verbose)
-            return self.kdf.verify(u_sign, expected_key)
+                                                            hasher=self.hasher, verbose=self.verbose, encoding=encoding)
+        
+        def derive(self, key_material, verbose:bool=False, encoding='utf-8') -> bytes:
+            u_sign = self.sign_by_sshkey(data=key_material, verbose=verbose, encoding=encoding)
+            kdf    = cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC(algorithm=cryptography.hazmat.primitives.hashes.SHA512(),
+                                                                          length=self.key_bits//8, salt=self.salt, iterations=self.iterations)
+            return kdf.derive(u_sign)
+        
+        def verify(self, key_material, expected_key, verbose:bool=False, encoding='utf-8'):
+            u_sign = self.sign_by_sshkey(data=key_material, verbose=verbose, encoding=encoding)
+            kdf    = cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC(algorithm=cryptography.hazmat.primitives.hashes.SHA512(),
+                                                                          length=self.key_bits//8, salt=self.salt, iterations=self.iterations)
+            return kdf.verify(u_sign, expected_key)
 
 
 class EncStoreUnit(EncDSUtil):
@@ -145,9 +175,12 @@ class EncStoreUnit(EncDSUtil):
     Base class : 
 
     """
+
+    VERSION = __version__
+    
     AES_GCM_KEYBITS  = 256
     AES_GCM_IVBITS   = 96 # 12*8
-    KEY_HASHER       = cryptography.hazmat.primitives.hashes.Hash(cryptography.hazmat.primitives.hashes.SHA256())
+    KEY_HASHER       = cryptography.hazmat.primitives.hashes.SHA256()
     CONVERT_HEADER   = b'::CONVERTED::::'
     CONVERT_TALIER   = b'::::'
     CONVERT_BYTEODR  = 'big' # Network byte order : altavative: sys.byteorder
@@ -163,6 +196,11 @@ class EncStoreUnit(EncDSUtil):
                                None:      b'NON',
                                'raw':     b'RAW',
                                'unknown': b'UKW'}
+
+
+    EncryptedData_NAME = 'EncryptedData'
+    EncryptedData = collections.namedtuple(EncryptedData_NAME,
+                                           ['data', 'iv', 'salt', 'key_prefix', 'key_suffix'])
     
     def __init__(self, **kwds):
         super().__init__(**kwds)
@@ -174,7 +212,7 @@ class EncStoreUnit(EncDSUtil):
     @classmethod
     def ToBytes(cls, val, verbose:bool=False) -> bytes :
         if val is None:
-            return cls.CONVERT_HEADER+cls.CONVERT_TYPE_POSTFIXES.get(None)+bytes(0)
+            return cls.CONVERT_HEADER+cls.CONVERT_TYPE_POSTFIXES.get(None)+cls.CONVERT_TALIER
 
         if isinstance(val, bytes):
             return val
@@ -187,11 +225,11 @@ class EncStoreUnit(EncDSUtil):
         if isinstance(val, bytearray):
             return prefix+bytes(val)
         
+        if isinstance(val, bool):
+            return prefix+(b'\x01' if val else b'\x00')
+
         if isinstance(val, int):
             return prefix+val.to_bytes(length=32, byteorder=cls.CONVERT_BYTEODR, signed=True)
-
-        if isinstance(val, bool):
-            return prefix+val.to_bytes()
 
         if isinstance(val, float):
             return prefix+struct.pack('!d', val)
@@ -213,13 +251,14 @@ class EncStoreUnit(EncDSUtil):
         
     @classmethod
     def FromBytes(cls, val:bytes, verbose:bool=False):
+
         if not val.startswith(cls.CONVERT_HEADER):
             return val
 
-        if val.startswith(cls.CONVERT_TYPE_POSTFIXES.get(None)+cls.CONVERT_TALIER):
-            return None
-
         sval = val.removeprefix(cls.CONVERT_HEADER)
+
+        if sval.startswith(cls.CONVERT_TYPE_POSTFIXES.get(None) + cls.CONVERT_TALIER):
+            return None
 
         if sval.startswith(cls.CONVERT_TYPE_POSTFIXES.get('raw')+cls.CONVERT_TALIER):
             return sval.removeprefix(cls.CONVERT_TYPE_POSTFIXES.get('raw')+cls.CONVERT_TALIER)
@@ -256,37 +295,93 @@ class EncStoreUnit(EncDSUtil):
             return sxval.decode(encoding=cls.STR_ENCODING)
 
         return sval[sval.find(cls.CONVERT_TALIER)+len(cls.CONVERT_TALIER):]
-        
+    
     @classmethod
     def Enciphering(cls, raw_data,
-                    cipher : cryptography.hazmat.primitives.ciphers.Cipher,
+                    master_key=None,
+                    sshkey : paramiko.pkey.PKey=None,
+                    iterations=1000000,
+                    kdf=None, key=None, iv=None, 
+                    cipher : cryptography.hazmat.primitives.ciphers.Cipher=None,
                     encipher_data_dict_key=False, verbose:bool=False)  -> bytes:
 
         if isinstance(raw_data, list):
-            return [ cls.Enciphering(i, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
+            return [ cls.Enciphering(i, master_key=master_key, sshkey=sshkey,
+                                     iterations=iterations, kdf=kdf, key=key, iv=iv, 
+                                     cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
                      for i in raw_data ]
 
         if isinstance(raw_data, (tuple, set, frozenset)):
-            return type(raw_data)([ cls.Enciphering(i, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
+            return type(raw_data)([ cls.Enciphering(i, master_key=master_key, sshkey=sshkey,
+                                                    iterations=iterations, kdf=kdf, key=key,
+                                                    iv=iv, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
                                     for i in raw_data ])
 
         if isinstance(raw_data, dict):
             if encipher_data_dict_key:
-                return { cls.Enciphering(k, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key) :
-                         cls.Enciphering(v, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
-                         for k,v in raw_data.items() }
-            else:
-                return { k : cls.Enciphering(v, cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
-                         for k,v in raw_data.items() }
+                if verbose:
+                    sys.stderr.write("[%s.%s:%d] Encryption of the keys of the dict objects is not supported yet. (ignored)\n"
+                                     % (cls.__name__, inspect.currentframe().f_code.co_name,
+                                        inspect.currentframe().f_lineno))
+                # return { cls.Enciphering(k, master_key=master_key, sshkey=sshkey,
+                #                          iterations=iterations, kdf=kdf, key=key, iv=iv,
+                #                          cipher=cipher, encipher_data_dict_key=encipher_data_dict_key) :
+                #          cls.Enciphering(v, master_key=master_key, sshkey=sshkey,
+                #                          iterations=iterations, kdf=kdf, key=key, iv=iv,
+                #                          cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
+                #          for k,v in raw_data.items() }
+
+            return { k : cls.Enciphering(v, master_key=master_key, sshkey=sshkey,
+                                         iterations=iterations, kdf=kdf, key=key, iv=iv,
+                                         cipher=cipher, encipher_data_dict_key=encipher_data_dict_key)
+                     for k,v in raw_data.items() }
+
+        if cipher is not None or isinstance(cipher, cryptography.hazmat.primitives.ciphers.Cipher):
+            if verbose:
+                sys.stderr.write("[%s.%s:%d] Recycle of Cipher object is not supported (ignored)\n"
+                                 % (cls.__name__, inspect.currentframe().f_code.co_name,
+                                    inspect.currentframe().f_lineno))
             
+        enc_kdf = kdf if isinstance(kdf, super().SSHSignKDF) else cls.SSHSignKDF(sshkey=sshkey, salt=None, 
+                                                                                 key_bits=cls.AES_GCM_KEYBITS, iterations=iterations,
+                                                                                 sshkeysign_algorithm="rsa-sha2-512",
+                                                                                 hasher=cls.KEY_HASHER, verbose=verbose)
+        if isinstance(key, bytes):
+            enc_key = key
+            mkey_prefix = ''
+            mkey_suffix = ''
+        else:
+            mkey_prefix = str(uuid.uuid1())
+            mkey_suffix = str(uuid.uuid4())
+            enc_key = enc_kdf.derive(key_material=cls.build_masterkey(master_key=master_key,
+                                                                      prefix=mkey_prefix,
+                                                                      suffix=mkey_suffix,
+                                                                      encoding=cls.STR_ENCODING), verbose=verbose)
+                
+        enc_iv  = iv  if isinstance(iv, bytes)  else cls.GenIV(key_bits=cls.AES_GCM_IVBITS)
+        
+        cipher = cryptography.hazmat.primitives.ciphers.Cipher(cryptography.hazmat.primitives.ciphers.algorithms.AES(enc_key),
+                                                               cryptography.hazmat.primitives.ciphers.modes.GCM(enc_iv),
+                                                               backend=cryptography.hazmat.backends.default_backend())
+        
         encryptr = cipher.encryptor()
         encryptd = encryptr.update(cls.ToBytes(raw_data, verbose=verbose)) + encryptr.finalize()
         l_tag    = len(encryptr.tag).to_bytes(length=cls.TAG_LENGTH_BYTES, byteorder=cls.CONVERT_BYTEODR, signed=False)
-        return l_tag+encryptr.tag+encryptd
-        
+        #return l_tag+encryptr.tag+encryptd
+
+        return cls.EncryptedData(data=l_tag+encryptr.tag+encryptd,
+                                 iv=enc_iv, salt=enc_kdf.salt, key_prefix=mkey_prefix, key_suffix=mkey_suffix)
+    @classmethod
+    def is_encrypted_data(cls, obj):
+        objcls = obj if isinstance(obj, type) else type(obj)
+        return ( isinstance(objcls, type)
+                 and issubclass(objcls, tuple)
+                 and isinstance(getattr(objcls, '_fields', None), tuple)
+                 and objcls.__name__ == cls.EncryptedData_NAME )
+    
     @classmethod
     def Encipher(cls, raw_data,
-                 master_key:str|bytes, sshkey : paramiko.pkey.PKey,
+                 master_key, sshkey : paramiko.pkey.PKey,
                  iterations=1000000,
                  kdf=None, key=None, iv=None, encipher_data_dict_key=False,
                  verbose=False) -> bytes:
@@ -295,14 +390,19 @@ class EncStoreUnit(EncDSUtil):
                                                                                  key_bits=cls.AES_GCM_KEYBITS, iterations=iterations,
                                                                                  sshkeysign_algorithm="rsa-sha2-512",
                                                                                  hasher=cls.KEY_HASHER, verbose=verbose)
-        enc_key = key if isinstance(key, bytes) else enc_kdf.derive(key_material=master_key, verbose=verbose)
-        enc_iv  = iv  if isinstance(iv, bytes)  else cls.GenIV(key_bits=cls.AES_GCM_IVBITS)
+        # enc_key = key if isinstance(key, bytes) else enc_kdf.derive(key_material=master_key, verbose=verbose)
+        # enc_iv  = iv  if isinstance(iv, bytes)  else cls.GenIV(key_bits=cls.AES_GCM_IVBITS)
 
-        cphr = cryptography.hazmat.primitives.ciphers.Cipher(cryptography.hazmat.primitives.ciphers.algorithms.AES(enc_key),
-                                                             cryptography.hazmat.primitives.ciphers.modes.GCM(enc_iv),
-                                                             backend=cryptography.hazmat.backends.default_backend())
-        
-        encryptd = cls.Enciphering(raw_data, cipher=cphr, encipher_data_dict_key=encipher_data_dict_key, verbose=verbose)
+        # cphr = cryptography.hazmat.primitives.ciphers.Cipher(cryptography.hazmat.primitives.ciphers.algorithms.AES(enc_key),
+        #                                                      cryptography.hazmat.primitives.ciphers.modes.GCM(enc_iv),
+        #                                                      backend=cryptography.hazmat.backends.default_backend())
+        # encryptd = cls.Enciphering(raw_data, master_key=master_key, sshkey=sshkey,
+        #                            iterations=iterations, kdf=kdf, key=key, iv=iv,
+        #                            cipher=cphr, encipher_data_dict_key=encipher_data_dict_key, verbose=verbose)
+        enc_iv   = None
+        encryptd = cls.Enciphering(raw_data, master_key=master_key, sshkey=sshkey,
+                                   iterations=iterations, kdf=enc_kdf, key=None, iv=None,
+                                   cipher=None, encipher_data_dict_key=encipher_data_dict_key, verbose=verbose)
         return (encryptd, enc_iv, enc_kdf.salt)
 
     
@@ -346,17 +446,26 @@ class EncStoreUnit(EncDSUtil):
         return cls.FromBytes(decryptd, verbose=verbose)
 
     @classmethod
-    def Decipher(cls, enc_data, enc_iv:str|bytes,
-                 salt:str|bytes, master_key:str|bytes, sshkey:paramiko.pkey.PKey,
+    def Decipher(cls, enc_data, enc_iv,
+                 salt, master_key, sshkey:paramiko.pkey.PKey,
+                 mkey_prefix=None, mkey_suffix=None,
                  kdf=None, key=None, iterations=1000000, decipher_data_dict_key=False, verbose=False) -> bytes:
 
         enc_kdf = kdf if isinstance(kdf, super().SSHSignKDF) else cls.SSHSignKDF(sshkey=sshkey, salt=salt, 
                                                                                  key_bits=cls.AES_GCM_KEYBITS, iterations=iterations,
                                                                                  sshkeysign_algorithm="rsa-sha2-512",
                                                                                  hasher=cls.KEY_HASHER, verbose=verbose)
-        enc_key = key if isinstance(key, bytes) else enc_kdf.derive(key_material=master_key, verbose=verbose)
 
-        u_enc_iv = enc_iv.encode(coding=cls.STR_ENCODING) if isinstance(enc_iv,str) else enc_iv
+        
+
+
+        enc_key = key if isinstance(key, bytes) else enc_kdf.derive(key_material=cls.build_masterkey(master_key=master_key,
+                                                                                                     prefix=mkey_prefix,
+                                                                                                     suffix=mkey_suffix,
+                                                                                                     encoding=cls.STR_ENCODING),
+                                                                    verbose=verbose)
+
+        u_enc_iv = enc_iv.encode(encoding=cls.STR_ENCODING) if isinstance(enc_iv,str) else enc_iv
         if not isinstance(u_enc_iv, bytes):
             raise TypeError("[%s.%s:%d] IV Type is not bytes nor str (%s) \n"
                             % (cls.__name__, inspect.currentframe().f_code.co_name,
@@ -370,6 +479,8 @@ EncStoreUnit.__update_convert_header__()
 
 class EncipherStorageUnit(EncStoreUnit):
 
+    VERSION = __version__
+
     ENC_KEY_DATA    = 'data'
     ENC_KEY_IV      = 'iv'
     ENC_KEY_SALT    = 'salt'
@@ -377,6 +488,13 @@ class EncipherStorageUnit(EncStoreUnit):
     ENC_KEY_KDFPKEY = 'pkey'
     ENC_DICT_KEYS   = { ENC_KEY_DATA, ENC_KEY_IV, ENC_KEY_SALT, ENC_KEY_KDFMKEY, ENC_KEY_KDFPKEY }
 
+    ENC_KEY_ID      = 'enc_fmt'
+    ENC_VAL_ID      = os.path.basename(__name__)+"-FMT-V2"
+    ENC_KEY_PREFIX  = 'key_prefix'
+    ENC_KEY_SUFFIX  = 'key_suffix'
+
+    ENC_DICT_KEYS_V2 = ENC_DICT_KEYS | { ENC_KEY_ID, ENC_KEY_PREFIX, ENC_KEY_SUFFIX }
+    
     def __init__(self, master_key:str,
                  sshkey : paramiko.pkey.PKey, 
                  kdf_iterations=1000000,
@@ -406,9 +524,14 @@ class EncipherStorageUnit(EncStoreUnit):
                                          len(masterkey) >= length ) else self.__class__.GenMasterkey(key_bits=length)
         return self.master_key
 
-    def get_hashed_masterkey(self) -> str:
+    def get_masterkey(self, prefix=None, suffix=None):
+        return self.__class__.build_masterkey(self.master_key, prefix=prefix, suffix=suffix, 
+                                              encoding=self.file_encoding)
+
+    def get_hashed_masterkey(self, prefix=None, suffix=None) -> str:
         hasher = cryptography.hazmat.primitives.hashes.Hash(cryptography.hazmat.primitives.hashes.SHA256())
-        hasher.update(self.master_key.encode(encoding=self.file_encoding))
+        mkey = self.get_masterkey(prefix=prefix, suffix=suffix)
+        hasher.update(mkey.encode(encoding=self.file_encoding))
         hashed_mkey = hasher.finalize()
         return base64.b64encode(hashed_mkey).decode(encoding=self.file_encoding)
 
@@ -421,19 +544,50 @@ class EncipherStorageUnit(EncStoreUnit):
                                        iterations=self.kdf_iterations,
                                        encipher_data_dict_key=self.encipher_data_dict_key, verbose=verbose)
     
-    def decipher_by_sshkdf(self, enc_data, enc_iv:str|bytes, salt:str|bytes, verbose=False):
+    def decipher_by_sshkdf(self, enc_data, enc_iv, salt,
+                           mkey_prefix=None, mkey_suffix=None, verbose=False):
         return self.__class__.Decipher(enc_data=enc_data, enc_iv=enc_iv,
-                                       salt=salt, master_key=self.master_key, sshkey=self.sshkey,
+                                       salt=salt, master_key=self.master_key,
+                                       mkey_prefix=mkey_prefix, mkey_suffix=mkey_suffix,
+                                       sshkey=self.sshkey,
                                        iterations=self.kdf_iterations,
                                        decipher_data_dict_key=self.encipher_data_dict_key, verbose=verbose)
 
+    def convert_encrypted_data(self, encryptd):
+        if self.__class__.is_encrypted_data(encryptd):
+            return { self.__class__.ENC_KEY_ID :     self.__class__.ENC_VAL_ID,
+                     self.__class__.ENC_KEY_DATA:    encryptd.data,
+                     self.__class__.ENC_KEY_IV:      encryptd.iv, 
+                     self.__class__.ENC_KEY_SALT:    encryptd.salt,
+                     self.__class__.ENC_KEY_KDFMKEY: self.get_hashed_masterkey(), # (prefix=encryptd.key_prefix, suffix=encryptd.key_suffix),
+                     self.__class__.ENC_KEY_KDFPKEY: self.get_sshkey_fingerprint(),
+                     self.__class__.ENC_KEY_PREFIX:  encryptd.key_prefix,
+                     self.__class__.ENC_KEY_SUFFIX:  encryptd.key_suffix }
+        return encryptd
+
+    def imconvert_encrypted_data(self, encryptd):
+        if self.__class__.is_encrypted_data(encryptd):
+            return types.MappingProxyType(self.convert_encrypted_data(encryptd))
+        return encryptd
+    
+    def format_encrypted(self, encryptd):
+        if not self.__class__.is_encrypted_data(encryptd):
+            if isinstance(encryptd, dict):
+                return { self.imconvert_encrypted_data(k)
+                         : self.format_encrypted(v) for k, v in encryptd.items() }
+            if isinstance(encryptd, (tuple, list, set, frozenset)):
+                return type(encryptd)([ self.format_encrypted(v) for v in encryptd ])
+            return encryptd
+        return self.convert_encrypted_data(encryptd)
+    
     def encipher(self, raw_data, verbose=False) -> dict:
         encryptd, enc_iv, salt = self.encipher_by_sshkdf(raw_data=raw_data, verbose=verbose)
-        return {self.__class__.ENC_KEY_DATA: encryptd,
-                self.__class__.ENC_KEY_IV:   enc_iv, 
-                self.__class__.ENC_KEY_SALT: salt,
-                self.__class__.ENC_KEY_KDFMKEY: self.get_hashed_masterkey(),
-                self.__class__.ENC_KEY_KDFPKEY: self.get_sshkey_fingerprint()}
+        # return {self.__class__.ENC_KEY_DATA: encryptd,
+        #         self.__class__.ENC_KEY_IV:   enc_iv, 
+        #         self.__class__.ENC_KEY_SALT: salt,
+        #         self.__class__.ENC_KEY_KDFMKEY: self.get_hashed_masterkey(),
+        #         self.__class__.ENC_KEY_KDFPKEY: self.get_sshkey_fingerprint()}
+        return self.format_encrypted(encryptd)
 
     def decipher(self, enc_object, verbose=False):
         if isinstance(enc_object, list):
@@ -443,7 +597,31 @@ class EncipherStorageUnit(EncStoreUnit):
             return type(enc_object)( [ self.decipher(i, verbose=verbose) for i in enc_object ])
 
         if isinstance(enc_object, dict):
-            if self.__class__.ENC_DICT_KEYS.issubset(enc_object):
+            if self.__class__.ENC_DICT_KEYS_V2.issubset(enc_object):
+                if (enc_object.get(self.__class__.ENC_KEY_ID) == self.__class__.ENC_VAL_ID
+                    and ( enc_object.get(self.__class__.ENC_KEY_KDFMKEY)
+                          == self.get_hashed_masterkey(
+                              #prefix=enc_object.get(self.__class__.ENC_KEY_PREFIX),
+                              #suffix=enc_object.get(self.__class__.ENC_KEY_SUFFIX)
+                          ))
+                    and enc_object.get(self.__class__.ENC_KEY_KDFPKEY) == self.get_sshkey_fingerprint()):
+                    return self.decipher_by_sshkdf(enc_data=enc_object.get(self.__class__.ENC_KEY_DATA), 
+                                                   enc_iv=enc_object.get(self.__class__.ENC_KEY_IV),
+                                                   mkey_prefix=enc_object.get(self.__class__.ENC_KEY_PREFIX),
+                                                   mkey_suffix=enc_object.get(self.__class__.ENC_KEY_SUFFIX),
+                                                   salt=enc_object.get(self.__class__.ENC_KEY_SALT), verbose=verbose)
+                else:
+                    if verbose:
+                        sys.stderr.write("[%s.%s:%d] Skip due to key the mismatch : fmt=(read: %s, decipher: %s), master(read: %s, decipher: %s), sshkey(read: %s, decipher: %s)\n"
+                                         % (self.__class__.__name__, inspect.currentframe().f_code.co_name,
+                                            inspect.currentframe().f_lineno,
+                                            enc_object.get(self.__class__.ENC_KEY_ID), self.__class__.ENC_VAL_ID,
+                                            enc_object.get(self.__class__.ENC_KEY_KDFMKEY),
+                                            self.get_hashed_masterkey(prefix=enc_object.get(self.__class__.ENC_KEY_PREFIX),
+                                                                      suffix=enc_object.get(self.__class__.ENC_KEY_SUFFIX)),
+                                            enc_object.get(self.__class__.ENC_KEY_KDFPKEY), self.get_sshkey_fingerprint() ))
+                    return enc_object
+            elif self.__class__.ENC_DICT_KEYS.issubset(enc_object):
                 if (enc_object.get(self.__class__.ENC_KEY_KDFMKEY) == self.get_hashed_masterkey()
                     and enc_object.get(self.__class__.ENC_KEY_KDFPKEY) == self.get_sshkey_fingerprint()):
                     return self.decipher_by_sshkdf(enc_data=enc_object.get(self.__class__.ENC_KEY_DATA), 
@@ -451,8 +629,8 @@ class EncipherStorageUnit(EncStoreUnit):
                                                    salt=enc_object.get(self.__class__.ENC_KEY_SALT), verbose=verbose)
                 else:
                     if verbose:
-                        sys.stderr.write("[%s.%s:%d] Skip due to key the mismatch : master(read: %s, decipher %s), sshkey(read: %s, decipher %s)\n"
-                                         % (cls.__name__, inspect.currentframe().f_code.co_name,
+                        sys.stderr.write("[%s.%s:%d] Skip due to key the mismatch : master(read: %s, decipher %s), sshkey(read: %s, decipher: %s)\n"
+                                         % (self.__class__.__name__, inspect.currentframe().f_code.co_name,
                                             inspect.currentframe().f_lineno,
                                             enc_object.get(self.__class__.ENC_KEY_KDFMKEY), self.get_hashed_masterkey(),
                                             enc_object.get(self.__class__.ENC_KEY_KDFPKEY), self.get_sshkey_fingerprint() ))
@@ -464,15 +642,20 @@ class EncipherStorageUnit(EncStoreUnit):
 
 class CipherDataTree(DataTree, EncipherStorageUnit):
 
+    VERSION = __version__
+    
     def __init__(self, 
                  master_key:str,
                  sshkey:paramiko.pkey.PKey, 
-                 base_obj={}, name='', 
+                 base_obj=None, name='', 
                  identifier=None,
                  kdf_iterations=1000000,
                  encipher_data_dict_key=False,
                  default_idenfitier=True,  **kwds):
 
+        if base_obj is None:
+            base_obj = {}
+        
         self.name = name
         if isinstance(identifier, str) and identifier:
             self.common_id =  identifier
@@ -492,23 +675,37 @@ class CipherDataTree(DataTree, EncipherStorageUnit):
 
 
     def encipher_node(self, *args, 
-                      key:list|tuple=[], 
-                      keys:list|tuple|set|frozenset=[], entire_data=False, verbose=False):
+                      key=None, 
+                      keys=None, entire_data=False, verbose=False):
+
+        if key is None:
+            key = []
+
+        if keys is None:
+            keys = []
+
         if entire_data:
             enc_data = self.encipher(self.root_node, verbose=verbose)
             self.root_node = enc_data
             return enc_data
 
         buf = []
-        if not tuple(args) in buf:
-            buf.append(args)
-        if not tuple(key) in buf:
-            buf.append(key)
-        for k in keys:
-            if tuple(k) in buf:
-                continue
-            buf.append(key)
+        if len(args) > 0:
+            t_args = tuple(args)
+            if t_args not in buf:
+                buf.append(t_args)
 
+        if len(key) > 0:
+            t_key = tuple(key)
+            if t_key not in buf:
+                buf.append(t_key)
+
+        for k in keys:
+            t_k = tuple(k)
+            if t_k in buf:
+                continue
+            buf.append(t_k)
+    
         enc_buf = []
         for k in buf:
             raw_data,flg = self.accessor_w_chk(data=self.root_node, idxs=k)
@@ -517,27 +714,42 @@ class CipherDataTree(DataTree, EncipherStorageUnit):
             enc_data = self.encipher(raw_data, verbose=verbose)
             v, flg   = self.setter_w_chk(data=self.root_node, idxs=k, value=enc_data,
                                          padding=True, mixedtype=True, overwrite_innernode=True)
+            self.root_node = v
             enc_buf.append(v)
 
         return enc_buf
 
     def decipher_node(self, *args, 
-                      key:list|tuple=[], 
-                      keys:list|tuple|set|frozenset=[], entire_data=False, verbose=False):
+                      key=None, 
+                      keys=None, entire_data=False, verbose=False):
+
+        if key is None:
+            key = []
+
+        if keys is None:
+            keys = []
+
         if entire_data:
             dec_data = self.decipher(enc_object=self.root_node, verbose=verbose)
             self.root_node = dec_data
             return dec_data
 
         buf = []
-        if not tuple(args) in buf:
-            buf.append(args)
-        if not tuple(key) in buf:
-            buf.append(key)
+        if len(args) > 0:
+            t_args = tuple(args)
+            if t_args not in buf:
+                buf.append(t_args)
+
+        if len(key) > 0:
+            t_key = tuple(key)
+            if t_key not in buf:
+                buf.append(t_key)
+
         for k in keys:
-            if tuple(k) in buf:
+            t_k = tuple(k)
+            if t_k in buf:
                 continue
-            buf.append(key)
+            buf.append(t_k)
 
         dec_buf = []
         for k in buf:
@@ -547,13 +759,14 @@ class CipherDataTree(DataTree, EncipherStorageUnit):
             dec_data = self.decipher(enc_object=enc_data, verbose=verbose)
             v, flg   = self.setter_w_chk(data=self.root_node, idxs=k, value=dec_data,
                                          padding=True, mixedtype=True, overwrite_innernode=True)
+            self.root_node = v
             dec_buf.append(v)
 
         return dec_buf
 
-
-
 class EncDataStorage(object):
+
+    VERSION = __version__
 
     def __init__(self, storage_name:str, 
                  storage_masterkey:str=None,
@@ -595,7 +808,9 @@ class EncDataStorage(object):
         self.rsa_public_exponent = args.get('rsa_public_exponent', 65537)
         self.min_passphrase_length = min_passphrase_length
 
-        self.kdf_interactions = args.get('kdf_interactions', 1000000)
+        self.kdf_iterations = args.get('kdf_iterations', args.get('kdf_interactions', 1000000))
+        # for backword compatibility
+        
 
         # self.master_key_phrase = storage_masterkey
         self.set_masterkey(storage_masterkey)
@@ -730,7 +945,7 @@ class EncDataStorage(object):
                                                 seek_openssh_keydir_default=self.keypathconf['seek_openssh_keydir'],
                                                 passphrase=self.sshkey_passphrase)
 
-        self.sshkeyring.refresh_keyinfo(use_local_key=True, use_ssg_agent=self.ssh_agent['use_agent'],
+        self.sshkeyring.refresh_keyinfo(use_local_key=True, use_ssh_agent=self.ssh_agent['use_agent'],
                                         seek_openssh_dir=self.keypathconf['seek_openssh_keydir'],
                                         decode_private_key=False, passphrase=None, passphrase_alist=None,
                                         keydir_prefix=None, privatekey_dir=None, publickey_dir=None, exclude_pattern=None,
@@ -750,20 +965,20 @@ class EncDataStorage(object):
 
         if self.picked_keyinfo is None: # Make key if not found
             new_keyinfo, ssh_add_status = self.sshkeyring.setup_new_sshkey(key_id=self.use_key_id, 
-                                                                       key_type=self.use_key_type,
-                                                                       key_bits=self.key_bits,
-                                                                       passphrase=self.sshkey_passphrase,
-                                                                       register_agent=self.ssh_agent['register_key'],
-                                                                       keydir_prefix=self.keypathconf['prefix'],
-                                                                       privatekey_dir=None, publickey_dir=None,
-                                                                       keyfile_basename=self.keyfile_bn,
-                                                                       privatekey_ext=None, publickey_ext=None,
-                                                                       force_overwrite=self.allow_keyfile_overwrite,
-                                                                       ecdsa_ec_type="secp256r1", rsa_public_exponent=self.rsa_public_exponent,
-                                                                       min_passphrase_length=self.min_passphrase_length,
-                                                                       verbose=verbose)
+                                                                           key_type=self.use_key_type,
+                                                                           key_bits=self.key_bits,
+                                                                           passphrase=self.sshkey_passphrase,
+                                                                           register_agent=self.ssh_agent['register_key'],
+                                                                           keydir_prefix=self.keypathconf['prefix'],
+                                                                           privatekey_dir=None, publickey_dir=None,
+                                                                           keyfile_basename=self.keyfile_bn,
+                                                                           privatekey_ext=None, publickey_ext=None,
+                                                                           force_overwrite=self.allow_keyfile_overwrite,
+                                                                           ecdsa_ec_type="secp256r1", rsa_public_exponent=self.rsa_public_exponent,
+                                                                           min_passphrase_length=self.min_passphrase_length,
+                                                                           verbose=verbose)
             self.picked_keyinfo = self.sshkeyring.pickup_keyinfo(key_id=self.use_key_id,
-                                                             key_type=self.use_key_type)
+                                                                 key_type=self.use_key_type)
 
             if self.picked_keyinfo is None:
                 sys.stderr.write("[%s.%s:%d]:  No key pair is found ( key id: %s, type: %s)\n"
@@ -802,8 +1017,8 @@ class EncDataStorage(object):
                                if isinstance(self.data_identifier, str) and self.data_identifier 
                                else self.storage_name))
 
-        enciphd_ds = EncipherStorageUnit(master_key=master_key_phrase, sshkey=self.sshkey_use, 
-                                         kdf_iterations=self.kdf_interactions,
+        enciphd_ds = EncipherStorageUnit(master_key=master_key, sshkey=self.sshkey_use, 
+                                         kdf_iterations=self.kdf_iterations,
                                          name=data_name, identifier=data_idntfr,
                                          encipher_data_dict_key=encipher_data_dict_key)
         return enciphd_ds
@@ -814,13 +1029,13 @@ class EncDataStorage(object):
                         else self.storage_name)
         self.cipher_unit = EncipherStorageUnit(master_key=self.master_key_phrase,
                                                 sshkey=self.sshkey_use, 
-                                                kdf_iterations=self.kdf_interactions,
+                                                kdf_iterations=self.kdf_iterations,
                                                 name=self.storage_name, identifier=data_idntfr,
                                                 encipher_data_dict_key=encipher_data_dict_key)
         return self.cipher_unit
         
     def gen_datatree(self, storage_name:str=None,
-                     identifier:str=None,  base_obj:dict|list|tuple=None,
+                     identifier:str=None,  base_obj=None,
                      master_key_phrase:str=None, encipher_data_dict_key:bool=False):
         master_key = master_key_phrase if isinstance(master_key_phrase, str) and master_key_phrase else self.master_key_phrase
         data_name  = storage_name if isinstance(storage_name, str) and storage_name else self.storage_name
@@ -838,7 +1053,7 @@ class EncDataStorage(object):
         return cphd_dt
 
     def set_datatree(self, identifier:str=None, 
-                     base_obj:dict|list|tuple=None,
+                     base_obj=None,
                      encipher_data_dict_key:bool=False):
 
         data_idntfr = ( identifier
@@ -855,9 +1070,14 @@ class EncDataStorage(object):
 
     def read_datatree(self, datatree=None, file_path:str=None,
                       update=True, identifier=None, getall=True, index=None,
-                      decipher:bool=False, decipher_key:list|tuple=[], 
-                      decipher_keys:list|tuple|set|frozenset=[],
+                      decipher:bool=False, decipher_key=None, 
+                      decipher_keys=None,
                       decipher_entire_data=True, verbose:bool=False):
+
+        if decipher_key is None:
+            decipher_key = []
+        if decipher_keys is None:
+            decipher_keys = []
 
         dtr = datatree if isinstance(datatree, CipherDataTree) else self.datatree
 
@@ -879,10 +1099,15 @@ class EncDataStorage(object):
 
 
     def save_datatree(self, datatree=None, file_path:str=None,
-                      encipher:bool=False, encipher_key:list|tuple=[], 
-                      encipher_keys:list|tuple|set|frozenset=[], encipher_entire_data=False,
+                      encipher:bool=False, encipher_key=None, 
+                      encipher_keys=None, encipher_entire_data=False,
                       parent_obj=None, identifier=None, exclude_keys=[], bulk=True, index=None,
                       f_perm=0o644, make_directory:bool=True, d_perm=0o755, verbose:bool=False):
+
+        if encipher_key is None:
+            encipher_key = []
+        if encipher_keys is None:
+            encipher_keys = []
 
         dtr = datatree if isinstance(datatree, CipherDataTree) else self.datatree
         
@@ -904,16 +1129,24 @@ class EncDataStorage(object):
 
 
     def encipher(self, *args, 
-                 key:list|tuple=[], 
-                 keys:list|tuple|set|frozenset=[],
+                 key=None, 
+                 keys=None,
                  entire_data:bool=False, verbose:bool=False):
+        if key is None:
+           key = []
+        if keys is None:
+           keys = []
         return self.datatree.encipher_node(*args, key=key, keys=keys, 
                                            entire_data=entire_data, verbose=verbose)
 
     def decipher(self, *args, 
-                 key:list|tuple=[], 
-                 keys:list|tuple|set|frozenset=[],
+                 key=None, 
+                 keys=None,
                  entire_data:bool=False, verbose:bool=False):
+        if key is None:
+           key = []
+        if keys is None:
+           keys = []
         return self.datatree.decipher_node(*args, key=key, keys=keys,
                                            entire_data=entire_data, verbose=verbose)
 

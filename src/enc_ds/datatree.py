@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
 import os
 import sys
 import io
+import collections.abc
 
 import inspect
 import copy
@@ -17,19 +20,26 @@ import bz2
 import gzip
 import lzma
 
+from typing import Union
+
 class DataTreeBase:
 
     @classmethod
-    def accessor_w_chk(cls, data, idxs:list|tuple):
+    def accessor_w_chk(cls, data, idxs):
+        if idxs is None:
+            return data
         for idx in idxs:
             if isinstance(data, dict):
-                data = data[idx]
+                if idx in data:
+                    data = data[idx]
+                else:
+                    return (None, False)
             elif isinstance(data, (list, tuple)):
                 try:
-                    iidx = int(idx)
+                    idx = int(idx)
                 except:
                     return (None, False)
-                if iidx > 0 and iidx < len(data):
+                if isinstance(idx, int) and 0 <= idx and idx < len(data):
                     data = data[idx]
                 else:
                     return (None, False)
@@ -38,101 +48,106 @@ class DataTreeBase:
         return (data, True)
 
     @classmethod
-    def setter_w_chk(cls, data, idxs:list|tuple, value, padding=True, mixedtype=False, overwrite_innernode=True):
-        if len(idxs)<=0:
-            data = copy.deepcopy(value)
-            return (data, True)
-
-        cref  = data
-        pref = data
-        for i,idx in enumerate(idxs[:-1]):
-
-            if overwrite_innernode and (not isinstance(cref, (dict, list, tuple))):
-                if mixedtype and isinstance(idx,int):
-                    cref = [None]*(idx+1)
-                else:
-                    cref = { idx: None }
-
-            if isinstance(cref, dict):
-                if not isinstance(cref.get(idx), (dict, list, tuple)):
-                    if mixedtype and isinstance(idxs[i+1],int):
-                        if padding:
-                            cref[idx] = [None]*(idxs[i+1]+1)
-                        else:
-                            return (None, False)
-                    else:
-                        cref[idx] = { idxs[i+1]: None }
-
-                pref = cref
-                cref = cref[idx]
-            elif isinstance(cref, (list,tuple)):
-                try:
-                    iidx = int(idx)
-                except:
-                    return (None, False)
-                if iidx < 0: 
-                    return (None, False)
-                if iidx >= len(cref):
-                    if padding:
-                        # cref = type(cref)(list(cref) +[None]*(iidx+1-len(cref))) 
-                        # <-- Not working because of de-reference required. 
-                        pidx = int(idxs[i-1]) if isinstance(pref,(list,tuple)) else idxs[i-1]
-                        pref[pidx] = type(cref)(list(cref) +[None]*(iidx+1-len(cref)))
-                        cref=pref[pidx]
-                    else:
-                        return (None, False)
-
-                if not isinstance(cref[iidx], (dict, list, tuple)):
-                    if isinstance(cref, tuple):
-                        buf = list(cref)
-                        if mixedtype and isinstance(idxs[i+1],int):
-                            buf[iidx] = [None]*(idxs[i+1]+1)
-                        else:
-                            buf[iidx] = { idxs[i+1]: None }
-                        pidx = int(idxs[i-1]) if isinstance(pref,(list,tuple)) else idxs[i-1]
-                        pref[pidx] = tuple(buf)
-                    else:
-                        if mixedtype and isinstance(idxs[i+1],int):
-                            cref[iidx] = [None]*(idxs[i+1]+1)
-                        else:
-                            cref[iidx] = { idxs[i+1]: None }
-
-                pref = cref
-                cref = cref[iidx]
+    def pddlst(cls, buf=None, idx=0, paddingvalue=None):
+        if buf is None:
+            n_padding =  (-idx) if idx < 0 else (idx+1)
+            return [ paddingvalue, ] * n_padding
+        retv=copy.deepcopy(list(buf))
+        if idx>=0 and idx>=len(buf):
+            n_padding = idx+1-len(buf)
+            retv.extend([paddingvalue, ]*n_padding)
+        if idx<0 and len(buf)+idx<0:
+            n_padding = -(len(buf)+idx)
+            retv[:0] = [paddingvalue, ]*n_padding
+        return retv
+    
+    @classmethod
+    def setter_w_chk(cls, data, idxs, value, padding=True,
+                     mixedtype=False, overwrite_innernode=True, paddingvalue=None): 
+        if isinstance(idxs, (list,tuple)):
+            if len(idxs)>0:
+                idx    = idxs[0]
+                subidx = idxs[1:]
             else:
-                return (None, False)
-            
-
-        idx=idxs[-1]
-        if isinstance(cref, tuple):
-            if len(idxs)>1:
-                buf = list(pref[idxs[-2]])
-                buf[idx] = value
-                pref[idxs[-2]] = tuple(buf)
-            else:
-                buf = list(data)
-                buf[idx] = value
-                data = tuple(buf)
-        elif not isinstance(cref, (dict,list)):
-            if overwrite_innernode:
-                if mixedtype and isinstance(idx,int):
-                    cref = [None]*(idxs[i+1]+1)
-                    cref[idx] = value
-                else:
-                    cref = { idx: value }
-            else:
-                return (None, False)
+                return (copy.deepcopy(value), True)
+        elif isinstance(idxs, int) or isinstance(idxs, collections.abc.Hashable):
+            idx    = idxs
+            subidx = []
         else:
-            cref[idx] = value
-
-        return (cref[idx], True)
-
+            return (copy.deepcopy(value), True)
+    
+        flg_ok = False
+        if isinstance(data, (list, tuple)):
+            try:
+                i_idx = int(idx)
+            except:
+                i_idx = idx
+                
+            if isinstance(i_idx, int):
+                if not padding and ( i_idx>=len(data) or len(data)+i_idx<0 ):
+                    return (data, False)
+                ret_val = cls.pddlst(buf=data, idx=i_idx, paddingvalue=paddingvalue)
+                ret_val[i_idx], flg_ok = cls.setter_w_chk(ret_val[i_idx], subidx, value,
+                                                        padding=padding, mixedtype=mixedtype,
+                                                        overwrite_innernode=overwrite_innernode,
+                                                        paddingvalue=paddingvalue)
+                return (tuple(ret_val) if isinstance(data, tuple) else ret_val, flg_ok)
+            else:
+                ret_val = { i: v for i,v in enumerate(data) }
+                child   = ret_val[i_idx] if i_idx in ret_val else paddingvalue
+                ret_val[i_idx], flg_ok = cls.setter_w_chk(child, subidx, value,
+                                                          padding=padding, mixedtype=mixedtype,
+                                                          overwrite_innernode=overwrite_innernode,
+                                                          paddingvalue=paddingvalue)
+                return (ret_val, flg_ok)
+        elif isinstance(data, dict):
+            ret_val = copy.deepcopy(data)
+            child = ret_val[idx] if idx in ret_val else paddingvalue
+            ret_val[idx], flg_ok = cls.setter_w_chk(child, subidx, value,
+                                                    padding=padding, mixedtype=mixedtype,
+                                                    overwrite_innernode=overwrite_innernode,
+                                                    paddingvalue=paddingvalue)
+            return (ret_val, flg_ok)
+        elif not overwrite_innernode:
+            return (data, False)
+        else:
+            try:
+                i_idx = int(idx)
+            except:
+                i_idx = idx
+                
+            if mixedtype and isinstance(i_idx, int):
+                if not padding:
+                    if  i_idx>0 or i_idx<-1:
+                        return (data, False)
+                    else:
+                        i_idx=0
+                
+                ret_val = cls.pddlst(buf=None, idx=i_idx, paddingvalue=paddingvalue)
+                ret_val[i_idx], flg_ok = cls.setter_w_chk(ret_val[i_idx], subidx, value,
+                                                          padding=padding, mixedtype=mixedtype,
+                                                          overwrite_innernode=overwrite_innernode,
+                                                          paddingvalue=paddingvalue)
+            else:
+                ret_val = {idx: paddingvalue}
+                ret_val[idx], flg_ok = cls.setter_w_chk(ret_val[idx], subidx, value,
+                                                        padding=padding, mixedtype=mixedtype,
+                                                        overwrite_innernode=overwrite_innernode,
+                                                        paddingvalue=paddingvalue)
+        
+        return (ret_val, flg_ok)
 
     @classmethod
-    def recursive_update(cls, new_value={}, base_value={}, type_override=False):
+    def recursive_update(cls, new_value=None, base_value=None, type_override=False):
         """
         Merge dict-type variable base_value recurcively by new_value:
         """
+        if new_value is None:
+            new_value={}
+
+        if base_value is None:
+            base_value={}
+
         if not isinstance(new_value, (dict, list, tuple)):
             return new_value
     
@@ -170,7 +185,8 @@ class DataTreeBase:
                         merged[i] = base_value[i]
                     else:
                         break
-                return merged
+
+                return merged if isinstance(base_value, list) else tuple(merged)
     
         if type_override:
             if isinstance(new_value, dict):
@@ -240,7 +256,7 @@ class DataTreeBase:
             # List - Dict
             y_keys = set(base_value.keys())
             base_keys = y_keys.difference(set([ix for ix in range(len(new_value))]
-                                              +[str(inew_value) for ix in range(len(new_value))]))
+                                              +[str(ix) for ix in range(len(new_value))]))
             
             merged = { yk: base_value[yk] for yk in base_keys }
             
@@ -302,7 +318,7 @@ class DataTreeBase:
         return new_value
 
     @classmethod
-    def update(cls, data, node_names:list|tuple|dict=None,
+    def update(cls, data, node_names=None,
                base_obj:dict=None, list_mixed=False, type_override=False):
         nm_list = node_names.keys() if isinstance(node_names, dict) else node_names
         buf_raw = buf_fmt = data
@@ -369,7 +385,10 @@ class DataTreeBase:
         return buf
 
     @classmethod
-    def find_key(cls, obj, keyset:list|tuple=[], leaf_node=False, negate=True):
+    def find_key(cls, obj, keyset=None, leaf_node=False, negate=True):
+        if keyset is None:
+            keyset = []
+
         if len(keyset)<=0:
             if negate:
                 return True if leaf_node and isinstance(obj, (dict, list, tuple)) else False
@@ -406,16 +425,25 @@ class DataTreeBase:
         return flg_match
 
     @classmethod
-    def find_keys(cls, obj, keyset_list:list|tuple=[], leaf_node=False, negate=True):
+    def find_keys(cls, obj, keyset_list=None, leaf_node=False, negate=True):
+        if keyset_list is None:
+            keyset_list = []
+
         return [ cls.find_key(obj, keyset=keyset,leaf_node=leaf_node,
                               negate=negate) for keyset in keyset_list ]
     @classmethod
-    def find_keys_alist(cls, obj, keyset_list=[], leaf_node=False, negate=True):
+    def find_keys_alist(cls, obj, keyset_list=None, leaf_node=False, negate=True):
+        if keyset_list is None:
+            keyset_list = []
+
         return { tuple(keyset) : cls.find_key(obj, keyset=keyset, leaf_node=leaf_node, 
                                               negate=negate) for keyset in keyset_list }
 
     @classmethod
-    def find_value(cls, obj, keyset:list|tuple=[], leaf_node=False):
+    def find_value(cls, obj, keyset=None, leaf_node=False):
+        if keyset is None:
+            keyset = []
+
         if len(keyset)<=0:
             return (False, None) if leaf_node and isinstance(obj, (dict, list, tuple)) else (True, obj)
 
@@ -450,7 +478,10 @@ class DataTreeBase:
         return ptr_child
 
     @classmethod
-    def find_values(cls, obj, keyset_list:list|tuple=[], leaf_node=False):
+    def find_values(cls, obj, keyset_list=None, leaf_node=False):
+        if keyset_list is None:
+            keyset_list = []
+
         buf = []
         for keyset in keyset_list:
             flg,v = cls.find_value(obj, keyset=keyset, leaf_node=leaf_node)
@@ -459,7 +490,9 @@ class DataTreeBase:
         return buf
 
     @classmethod
-    def find_items(cls, obj, keyset_list:list|tuple=[], leaf_node=False):
+    def find_items(cls, obj, keyset_list=None, leaf_node=False):
+        if keyset_list is None:
+            keyset_list = []
         buf = {}
         for keyset in keyset_list:
             flg,v = cls.find_value(obj, keyset=keyset, leaf_node=leaf_node)
@@ -467,7 +500,7 @@ class DataTreeBase:
                 buf.update( { tuple(keyset) : v } )
         return buf
 
-    def set_value(cls, obj, keyset:list|tuple, value):
+    def set_value(cls, obj, keyset, value):
         if len(keyset)==1:
             obj[keyset] = value
 
@@ -497,67 +530,124 @@ class DataTreeBase:
         return (flg_match, ptr_child)
 
     @classmethod
-    def skim_data_tree(cls, obj:dict|list|tuple|set|frozenset, keyindexes:list):
-    
-        def extract_node(curr_node:dict|list|tuple|set|frozenset,
-                         keys:list) -> (dict|list|tuple|set|frozenset, bool):
-            if len(keys)<=0:
-                return (curr_node, True)
-            if isinstance(curr_node, dict) and keys[0] in curr_node.keys():
-                child_node, flg = extract_node(curr_node[keys[0]], keys[1:])
-                if not flg:
-                    return (None, False)
-                return ({keys[0]: child_node}, True)
-            elif isinstance(curr_node, (list|tuple|set|frozenset)):
-                try:
-                    i_key = keys[0] if isinstance(keys[0], int) else int(keys[0])
-                except:
-                    return (None, False)
-                if i_key < 0 or i_key >= len(curr_node):
-                    return (None, False)
-                result,flg = extract_node(curr_node[i_key], keys[1:])
-                if not flg:
-                    return (None, False)
-                cbuf = [None] * len(curr_node)
-                cbuf[keys[0]] = result
-                return (type(curr_node)(cbuf), True)
-            else:
-                return (None, False)
-    
-        def merge_data(dest_buf:dict|list|tuple|set|frozenset,
-                       node_added:dict|list|tuple|set|frozenset):
-            if isinstance(dest_buf, dict) and isinstance(node_added, dict):
-                for key, val in node_added.items():
-                    if key in dest_buf:
-                        merge_data(dest_buf[key], val)
-                    else:
-                        dest_buf[key] = val
-            elif (isinstance(dest_buf, (list|tuple|set|frozenset)) and
-                  isinstance(node_added, (list|tuple|set|frozenset)) ):
-                for i, val in enumerate(node_added):
-                    if i < len(dest_buf):
-                        if dest_buf[i] is None:
-                            dest_buf[i] = val
-                        else:
-                            merge_data(dest_buf[i], val)
-                    else:
-                        if isinstance(dest_buf, (tuple|set|frozenset)):
-                            ext_buf = list(dest_buf) + [None] * (len(node_added)-len(dest_buf))
-                            dest_buf = type(dest_buf)(ext_buf)
-                        dest_buf.append(val)
-    
-        result = type(obj)()
-        for keys in keyindexes:
-            extracted,flg = extract_node(obj, keys)
-            if flg:
-                merge_data(result, extracted)
-    
-        return result
+    def skim_data_tree(cls, obj, keyindexes):
 
-    @classmethod
-    def rest_data_tree(cls, obj:dict|list|tuple, keyindexes:list):
+        EMPTY = object()
     
-        def mask_tree(curr_node:dict|list|tuple, keys:list):
+        def clone_node(node):
+            if node is EMPTY:
+                return EMPTY
+            if isinstance(node, dict):
+                return { k: clone_node(v) for k, v in node.items() }
+            if isinstance(node, list):
+                return [ clone_node(v) for v in node ]
+            if isinstance(node, tuple):
+                return tuple( clone_node(v) for v in node )
+            return copy.deepcopy(node)
+    
+        def to_int_index(key):
+            try:
+                return key if isinstance(key, int) else int(key)
+            except (TypeError, ValueError):
+                return None
+    
+        def extract_node(curr_node, keys):
+            if len(keys) <= 0:
+                return (clone_node(curr_node), True)
+            
+            c_key = keys[0]
+            subkeys = keys[1:]
+    
+            if isinstance(curr_node, dict):
+                if c_key not in curr_node:
+                    return (EMPTY, False)
+    
+                child_node, flg = extract_node(curr_node[c_key], subkeys)
+                if not flg:
+                    return (EMPTY, False)
+    
+                return ( {c_key: child_node }, True)
+    
+            if isinstance(curr_node, (list, tuple)):
+                i_key = to_int_index(c_key)
+    
+                if i_key is None or i_key < 0 or i_key >= len(curr_node):
+                    return (EMPTY, False)
+    
+                child_node, flg = extract_node(curr_node[i_key], subkeys)
+                if not flg:
+                    return (EMPTY, False)
+    
+                buf = [EMPTY] * len(curr_node)
+                buf[i_key] = child_node
+    
+                return ( tuple(buf) if isinstance(curr_node, tuple) else buf, True)
+    
+            return (EMPTY, False)
+    
+        def merge_data(dest_node, added_node):
+            if dest_node is EMPTY:
+                return clone_node(added_node)
+    
+            if added_node is EMPTY:
+                return dest_node
+    
+            if isinstance(dest_node, dict) and isinstance(added_node, dict):
+                merged = clone_node(dest_node)
+    
+                for key, val in added_node.items():
+                    merged[key] = merge_data(merged.get(key, EMPTY), val)
+    
+                return merged
+    
+            if isinstance(dest_node, (list, tuple)) and isinstance(added_node, (list, tuple)):
+                n_merged = max(len(dest_node), len(added_node))
+                merged = []
+    
+                for i in range(n_merged):
+                    dest_val  = dest_node[i] if i < len(dest_node) else EMPTY
+                    added_val = added_node[i] if i < len(added_node) else EMPTY
+    
+                    merged.append(merge_data(dest_val, added_val))
+    
+                if isinstance(dest_node, tuple) and isinstance(added_node, tuple):
+                    return tuple(merged)
+    
+                return merged
+    
+            return clone_node(added_node)
+    
+        def finalize(node):
+            if node is EMPTY:
+                return None
+    
+            if isinstance(node, dict):
+                return {k: finalize(v) for k, v in node.items()}
+    
+            if isinstance(node, list):
+                return [ finalize(v) for v in node ]
+    
+            if isinstance(node, tuple):
+                return tuple( finalize(v) for v in node )
+    
+            return node
+    
+        retv = EMPTY
+        for keys in keyindexes:
+            if not isinstance(keys, (list, tuple)):
+                keys = (keys,)
+            extracted, flg = extract_node(obj, list(keys))
+            if flg:
+                retv = merge_data(retv, extracted)
+    
+        if retv is EMPTY:
+            return type(obj)()
+        return finalize(retv)
+    
+    @classmethod
+    def rest_data_tree(cls, obj, keyindexes:list):
+    
+        def mask_tree(curr_node, keys:list):
             if len(keys)<=0:
                 return (None, True)
             if isinstance(curr_node, dict) and keys[0] in curr_node.keys():
@@ -569,24 +659,29 @@ class DataTreeBase:
                 if len(curr_node)<=0:
                     return (None, True)
                 return (curr_node, False)
-            elif isinstance(curr_node, (list|tuple)):
+            elif isinstance(curr_node, (list, tuple)):
                 try:
                     i_key = keys[0] if isinstance(keys[0], int) else int(keys[0])
                 except:
                     return (curr_node, False)
                 curr_node_x = list(curr_node)
+
+                if i_key < 0 or i_key >= len(curr_node_x):
+                    return (curr_node, False)
+                
                 cnode, flg = mask_tree(curr_node_x[i_key], keys[1:])
                 if flg is True:
                     curr_node_x[i_key] = None
                 else:
                     curr_node_x[i_key] = cnode
                 return (type(curr_node)(curr_node_x), False)
-            return False
+            return (curr_node, False)
     
         buf = copy.deepcopy(obj)
         for keys in keyindexes:
-            mask_tree(buf, keys)
-    
+            msked,flg_ok = mask_tree(buf, keys)
+            buf = msked
+            
         def cleanup(obj, ref):
             if isinstance(obj, dict):
                 if isinstance(ref, dict):
@@ -681,6 +776,9 @@ class DataTree(DataTreeBase):
                                          idxs=key, value=value,
                                          padding=padding, mixedtype=mixedtype,
                                          overwrite_innernode=overwrite_innernode)
+        if flg:
+            self.root_node = v
+
         return flg
 
     def __getitem__(self, key):
@@ -691,6 +789,9 @@ class DataTree(DataTreeBase):
         v,flg = self._base.setter_w_chk(data=self.root_node,
                                         idxs=key, value=value, padding=True, 
                                         mixedtype=self.mixedtype, overwrite_innernode=True)
+        if not flg:
+            raise KeyError(key)
+        self.root_node = v
 
     def __str__(self):
         desc = "# class <%s> : identifier=%s\n" % (self.__class__.__name__, self.identifier )
@@ -704,8 +805,10 @@ class DataTree(DataTreeBase):
             desc += "# %s --> %s\n" % (k.__repr__(), v.__repr__())
         return desc
 
-    def is_validkey(self, keyset:list|tuple=[], 
+    def is_validkey(self, keyset=None, 
                     leaf_node=False, negate=True):
+        if keyset_list is None:
+            keyset_list = []
         return self._base.find_key(obj=self.root_node, keyset=keyset, 
                                    leaf_node=leaf_node, negate=negate)
 
@@ -716,7 +819,7 @@ class DataTree(DataTreeBase):
             return { i: v for i,v in enumerate(self.root_node) }
         elif isinstance(self.root_node, dict):
             return self.root_node
-        return { self.__class__.ROOT_NODE_LABEL_DEFAULT, self.root_node }
+        return { self.__class__.ROOT_NODE_LABEL_DEFAULT: self.root_node }
 
     def to_list(self):
         if isinstance(self.root_node, DataTree):
@@ -733,11 +836,11 @@ class DataTree(DataTreeBase):
         if isinstance(self.root_node, DataTree):
             self.root_node = self.__tuple__(self.root_node.root_node)
         elif isinstance(self.root_node, dict):
-            return [ (i, v) for i,v in self.root_node.items() ]
+            return tuple( (i, v) for i,v in self.root_node.items() )
         elif isinstance(self.root_node, (tuple, set, frozenset)):
-            return list(self.root_node)
+            return tuple(self.root_node)
         elif isinstance(self.root_node, list):
-            return self.root_node
+            return tuple(self.root_node)
         return (self.root_node, )
 
     def to_sequence(self):
@@ -881,9 +984,11 @@ class DataTree(DataTreeBase):
         return result
 
     def serialize(self, output_format:str=SERIALIZE_FORMATS[0],
-                  parent_obj:dict|list|tuple=None,
-                  exclude_keys:list|tuple|set|frozenset|dict=[],
+                  parent_obj=None,
+                  exclude_keys=None,
                   identifier=None, bulk=False, index=None)->str:
+        if exclude_keys is None:
+            exclude_keys = []
         
         id_key = identifier if isinstance(identifier,str) and identifier else self.identifier
         exclude_keys = exclude_keys.keys() if isinstance(exclude_keys,dict) else exclude_keys
@@ -901,13 +1006,13 @@ class DataTree(DataTreeBase):
             if isinstance(index,int):
                 if  index >= len(p_list):
                     p_list += (index+1-len(p_list))*[None]
-                    p_list[index] = s_root_node
+                p_list[index] = s_root_node
             if bulk:
                 p_obj = type(parent_obj)(p_list)
             else:
                 p_obj = {id_key : type(parent_obj)(p_list) }
         else:
-            raise ValueError("[%s.%s:%d] parent_obj : Invalid Type: (%s : shoule be dict|list|tuple|set|frozenset)\n"
+            raise ValueError("[%s.%s:%d] parent_obj : Invalid Type: (%s : shoule be dict|list|tuple)\n"
                              % (self.__class__.__name__, inspect.currentframe().f_code.co_name,
                                 inspect.currentframe().f_lineno, type(parent_obj).__name__))
 
@@ -921,7 +1026,10 @@ class DataTree(DataTreeBase):
 
         if output_format.endswith(('ini', 'INI')):
             sio = io.StringIO()
-            config = configparser.ConfigParser(allow_unnamed_section=True)
+            if sys.version_info >= (3, 13):
+                config = configparser.ConfigParser(allow_unnamed_section=True)
+            else:
+                config = configparser.ConfigParser()
             config.optionxform = str
 
             config[id_key] = self.flatten_dict(self.encode_bytes_base64(p_obj, sep1='$$', sep2='%%', avoid_eq_in_key=True))
@@ -948,7 +1056,10 @@ class DataTree(DataTreeBase):
         elif input_format.endswith(('yaml', 'yml', 'YAML', 'YML')):
             raw_contents = self.decode_bytes_base64(yaml.safe_load(content))
         elif input_format.endswith(('ini', 'INI')):
-            config = configparser.ConfigParser(allow_unnamed_section=True)
+            if sys.version_info >= (3, 13):
+                config = configparser.ConfigParser(allow_unnamed_section=True)
+            else:
+                config = configparser.ConfigParser()
             config.optionxform = str
             config.read_string(content)
             raw_contents = {}
@@ -973,7 +1084,10 @@ class DataTree(DataTreeBase):
                     raw_contents = self.decode_bytes_base64(yaml.safe_load(content))
                 except:
                     try:
-                        config = configparser.ConfigParser(allow_unnamed_section=True)
+                        if sys.version_info >= (3, 13):
+                            config = configparser.ConfigParser(allow_unnamed_section=True)
+                        else:
+                            config = configparser.ConfigParser()
                         config.optionxform = str
                         config.read_string(content)
                         raw_contents = {}
@@ -1001,10 +1115,13 @@ class DataTree(DataTreeBase):
         else:
             if isinstance(raw_contents, dict):
                 contents = raw_contents.get(id_key, raw_contents)
-
+            else:
+                contents = raw_contents
+                
             if ( isinstance(contents,(list,tuple,set,frozenset))
-                 and isinstance(index, int) and index > 0 and index < len(contents) ):
-                contents = contents[index]
+                 and isinstance(index, int)
+                 and index > -1 and index < len(contents) ):
+                contents = list(contents)[index] if isinstance(contents, (set, frozenset)) else contents[index]
 
         if update:
             self.merge(obj=contents, type_override=True)
@@ -1048,14 +1165,14 @@ class DataTree(DataTreeBase):
                                     inspect.currentframe().f_lineno, compress, ','.join(cls.COMPRESS_EXT)))
         elif isinstance(compress,bool) and compress:
             if cext:
-                ext2 = cext if cext.startwith('.') else ('.'+cext)
+                ext2 = cext if cext.startswith('.') else ('.'+cext)
             else:
                 ext2 = cls.COMPRESS_EXT[0]
         else:
             ext2 = ''
         
         if fmt is None:
-            ext1 = cext if fext.startwith('.') else ('.'+fext)
+            ext1 = fext if fext.startswith('.') else ('.'+fext)
         elif isinstance(fmt, str):
             ext1 = fmt if fmt.startswith('.') else '.'+fmt
         if not ext1[1:] in cls.SERIALIZE_FORMATS:
@@ -1068,11 +1185,13 @@ class DataTree(DataTreeBase):
 
     def save_serialized(self, file_path:str,
                         parent_obj:dict={}, identifier=None,
-                        exclude_keys:list|tuple|set|frozenset|dict=[], 
+                        exclude_keys=None, 
                         bulk=False, index=None,
                         f_perm=0o644, make_directory:bool=True,
                         d_perm=0o755, verbose=False):
 
+        if exclude_keys is None:
+            exclude_keys = []
         if file_path in ['-', '1', '2'] or file_path == None or (not file_path):
             flg_stdout = True
             fmt = self.__class__.SERIALIZE_FORMATS[0]
@@ -1080,7 +1199,7 @@ class DataTree(DataTreeBase):
             flg_stdout = False
             bn,ext = os.path.splitext(file_path)
             if ext.lower() in self.__class__.COMPRESS_EXT:
-                ext = os.path.splitext(bn)
+                bn, ext = os.path.splitext(bn)
             fmt = ext[1:]
         
         content = self.serialize(output_format=fmt, parent_obj=parent_obj, 
@@ -1111,7 +1230,7 @@ class DataTree(DataTreeBase):
 
             bn,ext = os.path.splitext(file_path)
             if ext.lower() in self.__class__.COMPRESS_EXT:
-                ext = os.path.splitext(bn)
+                bn, ext = os.path.splitext(bn)
             fmt = ext[1:]
 
         id_key = identifier if isinstance(identifier,str) and identifier else self.identifier

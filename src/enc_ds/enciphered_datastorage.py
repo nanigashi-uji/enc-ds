@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import sys
 import datetime
-import string
-import secrets
 import pydoc
-#import pytz
-#import tzlocal
 
 import inspect
-
-import base64
-import copy
-import pathlib
 
 import pkgstruct
 import argparse_extd
@@ -30,8 +21,8 @@ def main():
     storage_name              = pkg_info.script_basename
     serialized_format_default = 'yaml'
     config_ext_default        = '.config'+'.'+serialized_format_default
-    config_default            = storage_name+config_ext_default
-    master_key_phrase         = storage_name + 'AburaKataBura'
+    config_default            = pkg_info.script_basename + config_ext_default
+    master_key_phrase         = pkg_info.script_basename + 'AburaKataBura'
     kdf_iterations            = 1000000
     
     # Re-set the location of data storage if it is specified by command line option
@@ -79,7 +70,7 @@ def main():
 
     argprsr.add_argument('-i', '--key-id',   default=None, 
                          help=('Specify key id: Default is %s' % ( sshkeyring.SSHKeyUtil.Default_Key_Id(),) ))
-    argprsr.add_argument('-b', '--key-bits', type=int, default=None, help='Specity Key length')
+    argprsr.add_argument('-b', '--key-bits', type=int, default=None, help='Specify Key length')
     argprsr.add_argument('-B', '--keyfile-basename', default=None, help='Key file basename')
     argprsr.add_argument('-U', '--use-openssh-keys', default=None, action='store_true',
                          help=( 'Use openssh keys (in %s)' % (sshkeyring.SSHKeyUtil.SEEK_OPENSSH_KEYDIR_DEFAULT,)))
@@ -92,13 +83,13 @@ def main():
 
     argprsr.add_argument('-f', '--serialize-format', type=str, default=serialized_format_default,
                          choices=enc_ds.DataTree.SERIALIZE_FORMATS, help='Serialization Format')
-    argprsr.add_argument('-n', '--encipher-data-name', type=str, default='', help='Encipherd storage name')
+    argprsr.add_argument('-n', '--encipher-data-name', type=str, default='', help='Enciphered storage name')
     argprsr.add_argument('-E', '--encipher-data-dict-key', action='store_true', help='Encrypt key of dict-type data')
 
     argprsr.add_argument('-r', '--input-file',   type=str, help='Input file name')
     argprsr.add_argument('-o', '--output-file',  type=str, help='Output file name')
     argprsr.add_argument('-x', '--input-from-default-path', action='store_true',  help='Input from default data file')
-    argprsr.add_argument('-y', '--output-to-default-path',  action='store_true',  help='Input from default data file')
+    argprsr.add_argument('-y', '--output-to-default-path',  action='store_true',  help='Output to default data file')
     argprsr.add_argument('-z', '--io-with-config-file',     action='store_true',  help='I/O to config file')
     argprsr.add_argument('-Z', '--compress', type=str, nargs='?', const='bz2',
                          choices=[x[1:] for x in enc_ds.DataTree.COMPRESS_EXT], help='Compress output')
@@ -119,7 +110,9 @@ def main():
     argprsr.append_write_config_exclude(('--prefix', '--default-config',
                                          '--verbose', '--save-config', 'argv'))
 
-    argprsr.append_write_config_exclude(('--allow-keyfile-overwrite',
+    argprsr.append_write_config_exclude(('--master-key-phrase',
+                                         '--passphrase',
+                                         '--allow-keyfile-overwrite',
                                          '--encipher-data-name',
                                          '--encipher-data-dict-key',
                                          '--input-from-default-path',
@@ -160,8 +153,12 @@ def main():
     
     io_compress      = argprsr.args.compress
 
+    data_storage_name = ( argprsr.args.encipher_data_name
+                          if isinstance(argprsr.args.encipher_data_name, str) and argprsr.args.encipher_data_name
+                          else storage_name )
+
     data_path_default = pkg_info.complement('pkg_runstatedir','data', 
-                                            filename=enc_ds.EncDataStorage.set_path_ext(storage_name+'_data',
+                                            filename=enc_ds.EncDataStorage.set_path_ext(data_storage_name+'_data',
                                                                                         serialize_format, io_compress))
     if argprsr.args.verbose:
         sys.stderr.write("Default data path   : %s\n" % (data_path_default, ) )
@@ -170,7 +167,7 @@ def main():
         if ( argprsr.args.encode_mode and
              argprsr.args.category_name is None and
              argprsr.args.key_of_data is None):
-            sys.stderr.write("[%s.%s:%d] Error: 'io_with_config_file' is specified with neither '--cagegory-name' nor '--key-of-data'.\n"
+            sys.stderr.write("[%s.%s:%d] Error: 'io_with_config_file' is specified with neither '--category-name' nor '--key-of-data'.\n"
                              % (__name__, inspect.currentframe().f_code.co_name, inspect.currentframe().f_lineno))
             sys.exit()
 
@@ -195,8 +192,13 @@ def main():
     key_bits   = argprsr.args.key_bits if isinstance(argprsr.args.key_bits,int) else 4096
     category    = argprsr.args.category_name
 
-    encds = enc_ds.EncDataStorage(storage_name=storage_name, 
-                                  storage_masterkey=master_key_phrase,
+    use_openssh_keys = ( sshkeyring.SSHKeyUtil.SEEK_OPENSSH_KEYDIR_DEFAULT
+                         if argprsr.args.use_openssh_keys else None )
+    
+
+
+    encds = enc_ds.EncDataStorage(storage_name=data_storage_name, 
+                                  storage_masterkey=argprsr.args.master_key_phrase,
                                   data_identifier=category,
                                   sshkey_passphrase=argprsr.args.passphrase,
                                   min_passphrase_length=argprsr.args.passphrase_length_min,
@@ -204,11 +206,12 @@ def main():
                                   key_file_basename=argprsr.args.keyfile_basename,
                                   keypath_prefix=pkg_info.prefix,
                                   keypath_private=None, keypath_public=None,
-                                  use_openssh_keys=argprsr.args.use_openssh_keys,
+                                  use_openssh_keys=use_openssh_keys,
                                   allow_keyfile_overwrite=argprsr.args.allow_keyfile_overwrite,
                                   use_ssh_agent=(not argprsr.args.disuse_ssh_agent),
                                   invoke_ssh_agent=argprsr.args.invoke_ssh_agent,
-                                  register_agent=(not argprsr.args.disuse_ssh_agent))
+                                  register_agent=(not argprsr.args.disuse_ssh_agent),
+                                  kdf_iterations=argprsr.args.kdf_iterations)
 
     encds.io_format   = serialize_format
     encds.in_format   = serialize_format
@@ -269,10 +272,20 @@ def main():
                                      'version':  sys.version}}
 
         encipher_depth = int(argprsr.args.encipher_depth)
+
         data_key = tuple([ x for x in [ argprsr.args.category_name,
                                         argprsr.args.key_of_data_set,
                                         argprsr.args.key_of_data]
                            if x is not None and x ] )
+
+        if argprsr.args.encode_mode and len(data_key) == 0:
+            sys.stderr.write("[%s.%s:%d] Error: encode mode requires at least one of "
+                             "--category-name, --key-of-data-set, or --key-of-data.\n"
+                             % (__name__, inspect.currentframe().f_code.co_name, inspect.currentframe().f_lineno))
+            sys.exit(1)
+        
+        if encipher_depth < 1 or encipher_depth > len(data_key):
+            raise ValueError("encipher_depth must be between 1 and len(data_key)")
 
         if argprsr.args.io_with_config_file:
 

@@ -1,6 +1,7 @@
 [project]
 name = "enc-ds"
-version = "0.0.3"
+dynamic = ["version"]
+
 description = "Utility for simple encrypted data storage using RSA signatures via ssh-agent"
 dependencies = [ "cryptography", "paramiko", "PyNaCl", "PyYAML", "toml", "pkgstruct", "sshkeyring", "argparse_extd" ]
 readme = "README.rst"
@@ -10,6 +11,20 @@ authors = [{ name = "Nanigashi Uji", email="53845049+nanigashi-uji@users.noreply
 
 license = { file = "LICENSE" }
 keywords = ['ssh-agent', 'encryption']
+
+classifiers = [
+  'Development Status :: 2 - Pre-Alpha',
+  'Programming Language :: Python',
+  'Programming Language :: Python :: 3',
+  'Programming Language :: Python :: 3.9',
+  'Programming Language :: Python :: 3.10',
+  'Programming Language :: Python :: 3.11',
+  'Programming Language :: Python :: 3.12',
+  'Programming Language :: Python :: 3.13',
+  'Programming Language :: Python :: 3.14',
+  'Topic :: Software Development',
+  'Topic :: Utilities',
+]
 
 [project.urls]
 Homepage = "https://github.com/nanigashi-uji/enc-ds"
@@ -25,3 +40,10 @@ enciphered_datastorage = "enc_ds.enciphered_datastorage:main"
 
 [tool.setuptools.package-data]
 "yourlib" = ["share/data/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "enc_ds.enc_ds.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -7,7 +7,7 @@ TMPWORKDIR ?= $(TMPDIR)/enc_ds_test
 MMDC       ?= $(TMPWORKDIR)/bin/mmdc
 TESTPREFIX ?= $(TMPWORKDIR)/var/run/top
 
-.PHONY: clean_test_env clean_graphs python_module_test test_env test0 test1 clean_test_out
+.PHONY: clean_test_env clean_graphs python_module_test test_env test0 test1 clean_test_out tests clean_tests_out
 
 all: README.rst sdist bdist_wheel
 
@@ -15,9 +15,9 @@ README.rst: README.md
 	pandoc --from markdown --to rst $^ -o $@
 
 clean: 
-	rm -rf src/enc_ds.egg-info dist/* build/* *~ test/*~ src/enc_ds/*~ src/enc_ds/__pycache__ src/enc_ds/share/data/*~
+	rm -rf src/enc_ds.egg-info dist/* build/* *~ test/*~ src/enc_ds/*~ src/enc_ds/__pycache__ src/enc_ds/share/data/*~ 
 
-distclean: clean clean_test_env clean_test_out 
+distclean: clean clean_test_env clean_test_out clean_tests_out
 	rm -rf enc_ds.egg-info dist build README.rst
 
 sdist: README.rst
@@ -31,6 +31,14 @@ test_upload: sdist bdist_wheel
 
 upload: sdist bdist_wheel
 	twine upload --verbose dist/*
+
+tests:
+	mkdir -p tests_temp
+	$(PIP) install --target tests_temp $(shell cat requirements-dev.txt)
+	env PYTHONPATH=tests_temp: $(PYTHON) -m pytest
+
+clean_tests_out:
+	rm -rf tests_temp .pytest_cache .benchmarks 
 
 graphs: src/enc_ds/share/data/cipher_diagram_0.png src/enc_ds/share/data/cipher_diagram_1.png
 
